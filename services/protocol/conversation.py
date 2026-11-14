@@ -27,7 +27,6 @@ from services.image_failure import (
     ImageFailure,
     ImageFailureError,
     ImageGenerationError,
-    ImagePollTimeoutError,
     classify_conversation_failure,
     classify_image_exception,
     classify_message_facts,

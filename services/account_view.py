@@ -309,7 +309,6 @@ def account_row(
     unlimited_quota: bool,
     group_name: str = "",
 ) -> dict[str, Any]:
-    access_token = _text(account.get("access_token"))
     account_id = _text(account.get("management_id"))
     backend_category = _backend_status_category(account)
     credential_lifecycle = _credential_lifecycle(account)

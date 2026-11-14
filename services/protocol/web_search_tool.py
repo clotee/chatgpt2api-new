@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from services.account_service import account_service
 from services.openai_backend_api import OpenAIBackendAPI
 from services.protocol.search_execution import execute_search
 

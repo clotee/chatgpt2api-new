@@ -5,18 +5,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.request_detail_contract import (
-    RequestDetailField as CallDetailField,
     RequestDetailPresentation,
     RequestPresentationTone as PresentationTone,
     RequestStatusPresentation as CallPresentationStatus,
-    RequestTimelineCategory as TimelineCategory,
-    RequestTimelineGroupPresentation as TimelineGroupPresentation,
-    RequestTimelineLegendCategory as TimelineLegendCategory,
-    RequestTimelineLegendPresentation as TimelineLegendPresentation,
     RequestTimelinePresentation as TimelinePresentation,
-    RequestTimelineSegmentPresentation as TimelineSegmentPresentation,
-    RequestTimelineStepPresentation as TimelineStepPresentation,
-    RequestTimelineTone as TimelineTone,
 )
 
 

@@ -118,7 +118,7 @@ class _SpoolOwnerLease:
                 with interprocess_lock(self.lifecycle_path):
                     self._release_owner()
                     shutil.rmtree(self.root, ignore_errors=True)
-            except Exception as exc:
+            except Exception:
                 # Releasing the owner still makes an undeleted root reclaimable on
                 # the next startup if lifecycle-lock acquisition itself failed.
                 try:
@@ -1157,7 +1157,6 @@ class ImageTaskService:
             ]
             with self._lock:
                 task = self._tasks.get(key)
-                quality = _clean(task.get("quality"), "auto") if task else "auto"
                 size = _clean(task.get("size")) if task else None
                 output_format = _clean(task.get("output_format")) if task else None
             formatted = format_image_result(

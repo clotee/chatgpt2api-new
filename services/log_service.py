@@ -28,7 +28,6 @@ from services.realtime_monitor_service import realtime_monitor_service
 from utils.diagnostics import (
     diagnostic_excerpt,
     exception_diagnostic_fields,
-    scrub_diagnostic_value,
 )
 from utils.helper import anthropic_sse_stream, image_sse_stream, sse_json_stream
 from utils.image_tokens import image_output_metadata

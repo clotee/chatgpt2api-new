@@ -3607,7 +3607,7 @@ class OpenAIBackendAPI:
                     file_ids,
                     sediment_ids,
                 )
-            except ImagePollTimeoutError as exc:
+            except ImagePollTimeoutError:
                 if not file_ids and not sediment_ids:
                     raise
                 logger.warning({
