@@ -11,6 +11,7 @@
 + [优化] 日志脱敏统一收敛，覆盖 password、secret、api_key、cookie 等更多敏感字段。
 + [修复] OAuth 登录换取令牌恢复 TLS 证书校验，修复可被中间人窃取凭据的风险（保留显式关闭选项）。
 + [修复] 升级 starlette、python-multipart、Pillow、axios 等依赖，修复已知安全漏洞。
++ [优化] Docker 容器改为非 root 用户（UID/GID 1000）运行；存量部署升级前需按 `docs/deployment.md` 处理宿主机目录与数据卷属主。
 
 ## 3.2.9 - 2026-11-09
 
