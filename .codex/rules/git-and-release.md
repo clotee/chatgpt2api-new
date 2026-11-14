@@ -48,3 +48,13 @@
 - 当前文档只描述已验证行为。删除路由或功能时，同一修改删除对应的 current 文档内容。
 - 计划文件不是发布记录；过期计划应删除或明确标为 historical，不能继续挂在 current 文档索引中。
 - 版本号、tag、npm 包和容器标签必须指向同一已验证提交；未明确发布时不提升版本。
+
+## 分支策略（本仓库约定，2026-11 确立）
+
+- `feat/security-stability-hardening` 是常驻开发与发布分支：全部迭代、
+  修复和发布候选都在此分支上进行，发布 tag 从该分支打。
+- `main` 只跟随原作者仓库 `upstream`（github.com/yukkcat/chatgpt2api）
+  保持更新，不在其上直接开发。同步方式：`git fetch upstream` 后在
+  main 上快进合并 `upstream/main`；`origin`（clotee/chatgpt2api-new
+  fork）用于备份推送。
+- 开发分支合入 main 或推送远程均需用户明确授权。
