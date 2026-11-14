@@ -198,8 +198,9 @@ Phase 4 重构必须 L1-L4 全覆盖；文档/卫生项 L0 即可。
 
 ## 八、与仓库规则的衔接
 
-- **测试不入库**：本计划默认维持；若 D2=B，需先修订
-  `.codex/rules/backend.md:37` 和 `frontend.md:51` 条款。
+- **测试入库**：已修订（2026-11，用户批准）——`backend.md` 允许
+  `tests/` 覆盖公共 Interface 的回归测试入库；`web-vue/tests/`
+  仍维持本地不入库，前端测试策略待后续决策。
 - **文档治理**：本目录文件为 `ai-analysis` 分析产物，不属于
   `docs/` 的 current/PRD/ADR 治理体系；实施产生的 ADR（如 D1 加密、
   D3 拆分方案）应按 `docs/adr/` 规范单独创建。
