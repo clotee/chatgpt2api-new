@@ -45,6 +45,8 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs -f post
 
 `.env` 中的 `CHATGPT2API_AUTH_KEY` 优先于 `config.json` 的 `auth-key`。若要使用 `config.json`，先删除或注释 `.env` 中的该值，再填写 `auth-key`。
 
+`./config.json` 是绑定挂载文件：Docker 只会把宿主机上**已存在的普通文件**挂载进容器；如果该路径不存在，Docker 会创建一个同名**目录**，应用将无法读取配置。首次部署请先执行 `test -f config.json || printf '{}\n' > config.json`（上面的快速部署命令已包含该步骤）。
+
 默认地址：
 
 - 控制台：`http://localhost:3000`
@@ -63,6 +65,42 @@ curl -fsSL https://raw.githubusercontent.com/yukkcat/chatgpt2api/main/deploy/ins
 - 已有 PostgreSQL URL
 
 选择本地 PostgreSQL 时，脚本会自动生成并保存数据库密码，下载 `docker-compose.postgres.yml`，再与主 Compose 一起启动。重复运行安装脚本会复用已有密码。`CHATGPT2API_THREAD_TOKENS` 默认是 `120`，表示后端同步工作线程的并发容量，只要求正整数且不设置人为最高值；账号、代理和上游服务仍分别执行自己的并发限制。
+
+安装脚本默认跟随 `main` 分支。`BRANCH`（环境变量或 `--branch` 参数）同时决定克隆的 Git 分支/标签和默认镜像 tag；正式部署应固定为发布 tag，例如：
+
+```bash
+BRANCH=v3.2.9 curl -fsSL https://raw.githubusercontent.com/yukkcat/chatgpt2api/v3.2.9/deploy/install.sh | sudo bash -s -- --branch v3.2.9
+```
+
+### 反向代理与 HTTPS
+
+应用默认以 HTTP 提供服务（容器内监听 `80` 端口）。**公网部署必须**在前面加一层支持 TLS 的反向代理，不要把 `3000` 端口直接暴露到公网；仅限内网或本机访问的部署可以不启用 HTTPS。
+
+Caddy（自动申请和续期证书）：
+
+```caddyfile
+chatgpt2api.example.com {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+Nginx（证书由 certbot / ACME 等签发）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name chatgpt2api.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+TLS 在反向代理层终止，客户端仍以 `Authorization: Bearer` 头传递密钥，应用本身不需要额外配置。公网域名确定后，把 `CHATGPT2API_BASE_URL` 设为 `https://chatgpt2api.example.com`，保证生成的图片和文件链接使用 HTTPS。
 
 ## 本地开发
 
@@ -94,6 +132,26 @@ npm run dev
 选择数据库不是旧数据迁移操作，不会自动导入 JSON、JSONL、Git 或旧账号
 SQLite 文件。图片文件及其相关索引仍按图片存储边界管理。完整边界见
 [`storage-architecture.md`](storage-architecture.md)。
+
+## 安全边界
+
+### 管理员密钥的信任级别
+
+`CHATGPT2API_AUTH_KEY`（或 `config.json` 的 `auth-key`）是管理员密钥：持有它等价于完全控制实例——可以管理上游账号与凭据、修改全部设置、签发和吊销用户密钥、触发在线更新与备份。请把它当作与上游账号凭据同级的秘密保管：只放在环境变量或密钥管理系统中，不写入仓库、日志或工单。
+
+### 密钥吊销生效窗口与单实例假设
+
+- 用户密钥（控制台设置中的用户密钥管理，`/api/auth/users`）在认证快照中缓存：快照约每 5 秒尝试刷新，最长可保留约 30 秒旧状态。因此禁用或删除用户密钥后，旧密钥最多还可继续使用约 30 秒；同一进程内的修改会立即更新本地缓存。
+- 认证快照、实时监控、图片任务、账号生命周期 watcher 等运行时状态都保存在单个进程内。**本项目不支持多实例部署**：不要在负载均衡后运行多个副本，否则运行时状态不会收敛。需要保障可用性时使用单实例加进程守护（Compose `restart: unless-stopped` 或 systemd）。
+
+### 公开下载端点依赖不可猜测的 URL
+
+`/images/...`、`/image-thumbnails/...` 和 `/files/...` 下载端点不需要认证：任何拿到链接的人都可以下载对应文件。可编辑文件（PPT / PSD）使用随机 UUID 存储路径；图片使用「日期目录 + 时间戳 + 内容哈希」路径。请把这些链接视为 bearer 秘密——不要公开发布、不要写进公开日志；如需收敛访问范围，在反向代理层增加访问控制。
+
+### 密钥轮换流程
+
+- 管理员密钥：修改 `CHATGPT2API_AUTH_KEY` 环境变量并重启服务（环境变量在进程启动时读取）；或修改 `config.json` 的 `auth-key`（约 2 秒内生效，无需重启）。轮换后旧密钥立即失效，需同步更新所有管理员客户端。
+- 用户密钥：在控制台用户密钥管理中新建密钥并分发给客户端，确认切换完成后禁用或删除旧密钥；吊销在约 30 秒内生效。也可以通过更新接口直接替换某条密钥的值。
 
 ## 升级
 

@@ -52,6 +52,7 @@ PERF_WAIT_WARN_MS = 1000
 REQUEST_TEXT_EXCERPT_LIMIT = 1000
 REQUEST_TEXT_FULL_LIMIT = 50000
 
+# 兼容别名：外部集成可能按旧名称导入，保留不删（T-17 审查结论）
 LogService = CallRecordService
 LogCursorMismatch = CallRecordCursorMismatch
 log_service = LogService()

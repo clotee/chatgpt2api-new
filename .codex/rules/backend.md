@@ -38,3 +38,4 @@
 - 新增生产文件后确认它被 Git 跟踪，并检查所有导入在干净工作区可用。
 - 不向已弃用的 `test/` 目录新增测试；测试入口以 `pyproject.toml` 的 `testpaths` 为准。
 - 修改公共契约、设置、持久化或并发时，先运行针对性测试，再运行完整 Python 测试。
+- 清理与兜底路径使用 `contextlib.suppress(Exception)` 显式表达"有意忽略"；新增 `except Exception` 必须记录日志或重新抛出，确需静默吞掉异常时须在 except 块内写明理由；不改写存量 except 块。

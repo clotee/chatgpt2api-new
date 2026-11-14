@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import time
@@ -25,6 +26,7 @@ from utils.timezone import beijing_datetime_from_timestamp, beijing_now, beijing
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+WEBDAV_RESPONSE_MAX_BYTES = 50 * 1024 * 1024
 IMAGE_SYNC_MERGE_BATCH_SIZE = 64
 IMAGE_MUTATION_BATCH_SIZE = 16
 
@@ -144,8 +146,12 @@ def image_media_type(relative_path: str = "", payload: bytes | None = None) -> s
 
 
 def _is_image_rel(path: str) -> bool:
+    raw = str(path or "").strip()
+    dot = raw.rfind(".")
+    if dot <= 0 or raw[dot:].lower() not in IMAGE_EXTENSIONS:
+        return False
     try:
-        safe_rel = normalize_image_relative_path(path)
+        safe_rel = normalize_image_relative_path(raw)
     except HTTPException:
         return False
     return Path(safe_rel).suffix.lower() in IMAGE_EXTENSIONS
@@ -174,6 +180,12 @@ def _write_json_object(path: Path, data: dict[str, object]) -> None:
 
 
 class WebDAVClient:
+    """WebDAV 存储客户端。
+
+    独立于账号代理体系（proxy_settings）：WebDAV 是管理员自有基础设施，
+    通常部署在内网或对象存储端点，不复用上游账号代理配置。
+    """
+
     def __init__(self, settings: dict[str, object]):
         self.url = _clean(settings.get("webdav_url")).rstrip("/")
         self.username = _clean(settings.get("webdav_username"))
@@ -234,8 +246,21 @@ class WebDAVClient:
         return url
 
     def get(self, rel: str) -> bytes:
-        response = self._request("GET", self.remote_url(rel))
-        return bytes(response.content)
+        response = self._request("GET", self.remote_url(rel), stream=True)
+        try:
+            content_length = str(response.headers.get("content-length") or "").strip()
+            if content_length.isdigit() and int(content_length) > WEBDAV_RESPONSE_MAX_BYTES:
+                raise ImageStorageError("WebDAV GET response exceeds size limit")
+            chunks: list[bytes] = []
+            received = 0
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                received += len(chunk)
+                if received > WEBDAV_RESPONSE_MAX_BYTES:
+                    raise ImageStorageError("WebDAV GET response exceeds size limit")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            response.close()
 
     def delete(self, rel: str) -> bool:
         response = self.session.request("DELETE", self.remote_url(rel), timeout=30, **self._auth_kwargs())
@@ -252,7 +277,13 @@ class WebDAVClient:
         try:
             self.put(test_rel, b"chatgpt2api webdav test\n", content_type="text/plain")
             self.delete(test_rel)
-            return {"ok": True, "status": 200, "error": None}
+            result: dict[str, object] = {"ok": True, "status": 200, "error": None}
+            if urlparse(self.url).scheme == "http":
+                result["warning"] = (
+                    "WebDAV URL 使用 http，凭据与图片数据将明文传输；"
+                    "建议使用 https 或确认处于可信内网"
+                )
+            return result
         except ImageStorageError as exc:
             return {"ok": False, "status": 0, "error": str(exc)}
         except Exception as exc:
@@ -269,6 +300,7 @@ class ImageStorageService:
         self._item_lock_dir = index_file.with_suffix(index_file.suffix + ".item-locks")
         self._sync_file_lock = index_file.with_suffix(index_file.suffix + ".sync.lock")
         self._remote_delete_file = index_file.with_suffix(index_file.suffix + ".remote-deletes.json")
+        self._clean_index_cache: tuple[tuple[int, int] | None, dict[str, dict[str, object]]] | None = None
 
     @contextmanager
     def _index_guard(self) -> Iterator[None]:
@@ -307,7 +339,18 @@ class ImageStorageService:
             return {}
         return {str(key): value for key, value in items.items() if isinstance(value, dict)}
 
+    def _index_cache_key(self) -> tuple[int, int] | None:
+        try:
+            stat = self.index_file.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def _load_clean_index(self) -> dict[str, dict[str, object]]:
+        cache_key = self._index_cache_key()
+        cached = self._clean_index_cache
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
         items = self._load_index()
         clean: dict[str, dict[str, object]] = {}
         for rel, item in items.items():
@@ -320,7 +363,11 @@ class ImageStorageService:
             if "webdav" not in item and storage in {"webdav", "both"}:
                 item["webdav"] = True
             clean[rel] = item
+        self._clean_index_cache = (cache_key, clean)
         return clean
+
+    def _load_clean_index_mutable(self) -> dict[str, dict[str, object]]:
+        return copy.deepcopy(self._load_clean_index())
 
     def _save_index(self, items: dict[str, dict[str, object]]) -> None:
         _write_json_object(self.index_file, {"items": items})
@@ -428,15 +475,15 @@ class ImageStorageService:
             **({"width": dimensions[0], "height": dimensions[1]} if dimensions else {}),
         }
 
-    def _public_url(self, rel: str, base_url: str | None = None) -> str:
+    def _public_url_prefix(self, base_url: str | None = None) -> str:
         settings = self.settings()
         public_base_url = _clean(settings.get("public_base_url"))
         if public_base_url:
-            return f"{public_base_url.rstrip('/')}/{normalize_image_relative_path(rel)}"
-        return (
-            f"{(base_url or config.base_url).rstrip('/')}/images/"
-            f"{normalize_image_relative_path(rel)}"
-        )
+            return public_base_url.rstrip("/")
+        return f"{(base_url or config.base_url).rstrip('/')}/images"
+
+    def _public_url(self, rel: str, base_url: str | None = None) -> str:
+        return f"{self._public_url_prefix(base_url)}/{normalize_image_relative_path(rel)}"
 
     def make_relative_path(self, image_data: bytes, mime_type: str | None = None) -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
@@ -518,7 +565,7 @@ class ImageStorageService:
             if dimensions:
                 item["width"], item["height"] = dimensions
             with self._index_guard():
-                items = self._load_clean_index()
+                items = self._load_clean_index_mutable()
                 items[rel] = item
                 self._save_index(items)
                 pending = self._load_remote_delete_pending()
@@ -559,7 +606,7 @@ class ImageStorageService:
         if not _is_image_rel(safe_rel):
             raise HTTPException(status_code=404, detail="image not found")
         with self._item_guard(safe_rel), self._index_guard():
-            items = self._load_clean_index()
+            items = self._load_clean_index_mutable()
             item = items.get(safe_rel)
             if item is None:
                 raise HTTPException(status_code=404, detail="image not found")
@@ -692,7 +739,7 @@ class ImageStorageService:
                     continue
 
                 with self._index_guard():
-                    items = self._load_clean_index()
+                    items = self._load_clean_index_mutable()
                     changed = False
                     for rel, size in selected:
                         item = items.get(rel)
@@ -743,8 +790,17 @@ class ImageStorageService:
     ) -> list[dict[str, object]]:
         with self._index_guard():
             indexed = self._load_clean_index()
+            pending_index: dict[str, dict[str, object]] | None = None
+
+            def mutable_indexed() -> dict[str, dict[str, object]]:
+                nonlocal pending_index
+                if pending_index is None:
+                    pending_index = copy.deepcopy(indexed)
+                return pending_index
+
             root = config.images_dir
             changed = False
+            url_prefix = self._public_url_prefix(base_url)
             if refresh_index:
                 for path in root.rglob("*"):
                     if not path.is_file() or not _is_image_rel(path.name):
@@ -760,7 +816,7 @@ class ImageStorageService:
                         dimensions = _image_dimensions(payload)
                     except Exception:
                         dimensions = None
-                    indexed[rel] = {
+                    mutable_indexed()[rel] = {
                         "rel": rel,
                         "path": rel,
                         "name": path.name,
@@ -778,19 +834,19 @@ class ImageStorageService:
             items: list[dict[str, object]] = []
             for rel, item in list(indexed.items()):
                 if not _is_image_rel(rel):
-                    indexed.pop(rel, None)
+                    mutable_indexed().pop(rel, None)
                     changed = True
                     continue
                 if not self._item_generation(item):
                     item = {**item, "generation": self._new_generation()}
-                    indexed[rel] = item
+                    mutable_indexed()[rel] = item
                     changed = True
                 if verify_existing:
                     local_path = image_local_path(rel)
                     local = local_path.is_file()
                     webdav = bool(item.get("webdav"))
                     if not local and not webdav:
-                        indexed.pop(rel, None)
+                        mutable_indexed().pop(rel, None)
                         changed = True
                         continue
                     storage = "both" if local and webdav else ("webdav" if webdav else "local")
@@ -802,7 +858,7 @@ class ImageStorageService:
                             local = False
                             storage = "webdav" if webdav else "local"
                     if not local and not webdav:
-                        indexed.pop(rel, None)
+                        mutable_indexed().pop(rel, None)
                         changed = True
                         continue
                     indexed_size = item.get("size")
@@ -829,7 +885,7 @@ class ImageStorageService:
                             item["size"] = local_size
                         if size_changed and webdav:
                             item["remote_sync_pending"] = True
-                        indexed[rel] = item
+                        mutable_indexed()[rel] = item
                         changed = True
                 day = str(item.get("date") or "")
                 if start_date and day < start_date:
@@ -840,10 +896,10 @@ class ImageStorageService:
                     **item,
                     "rel": rel,
                     "path": rel,
-                    "url": self._public_url(rel, base_url),
+                    "url": f"{url_prefix}/{rel}",
                 })
             if changed:
-                self._save_index(indexed)
+                self._save_index(pending_index if pending_index is not None else indexed)
         items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return items
 
@@ -861,7 +917,7 @@ class ImageStorageService:
         planned: dict[str, dict[str, object]] = {}
         with self._item_guards(rels):
             with self._index_guard():
-                items = self._load_clean_index()
+                items = self._load_clean_index_mutable()
                 pending = self._load_remote_delete_pending()
                 catalog_changed = False
                 for rel in rels:
@@ -951,7 +1007,7 @@ class ImageStorageService:
     ) -> None:
         with self._item_guards(planned):
             with self._index_guard():
-                items = self._load_clean_index()
+                items = self._load_clean_index_mutable()
                 pending = self._load_remote_delete_pending()
                 catalog_changed = False
                 pending_changed = False
@@ -1124,7 +1180,7 @@ class ImageStorageService:
                 if not batch_committed:
                     continue
                 with self._index_guard():
-                    items = self._load_clean_index()
+                    items = self._load_clean_index_mutable()
                     for rel, update in batch_committed.items():
                         path = image_local_path(rel)
                         current = items.get(rel, {})
@@ -1193,7 +1249,7 @@ class ImageStorageService:
                 update["remote_url"] = remote_url
                 update = self._published_sync_item(update)
                 with self._index_guard():
-                    items = self._load_clean_index()
+                    items = self._load_clean_index_mutable()
                     current = items.get(rel, {})
                     merged = {
                         **current,
@@ -1233,7 +1289,7 @@ class ImageStorageService:
                     cleanup_remote.add(rel)
 
             with self._index_guard():
-                items = self._load_clean_index()
+                items = self._load_clean_index_mutable()
                 changed = False
                 for rel, update in updates.items():
                     if rel in cleanup_remote:
@@ -1371,7 +1427,7 @@ class ImageStorageService:
                         continue
 
                 with self._index_guard():
-                    items = self._load_clean_index()
+                    items = self._load_clean_index_mutable()
                     durable = self._load_remote_delete_pending()
                     if not self._tombstone_matches(durable.get(rel), tombstone):
                         continue

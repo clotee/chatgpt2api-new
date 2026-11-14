@@ -3,10 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.support import require_identity, resolve_image_base_url
+from services.config import config
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import (
     EditableFileTaskCleanupError,
@@ -29,6 +30,47 @@ from services.protocol.conversation import validate_image_output_request
 from utils.helper import has_response_image_generation_tool, is_image_chat_request, parse_image_count
 
 
+MAX_REQUEST_LIST_ITEMS = 1000
+MAX_REQUEST_MODALITIES = 16
+MAX_REQUEST_TOOLS = 256
+MAX_REQUEST_REFERENCE_IMAGES = 16
+MAX_REQUEST_PAYLOAD_CHARS = 256 * 1024 * 1024
+
+
+def _payload_chars(value: object) -> int:
+    """Estimate the serialized size of a request payload without materializing it."""
+    total = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            total += len(item) + 2
+        elif isinstance(item, dict):
+            total += 2
+            for key, child in item.items():
+                stack.append(key)
+                stack.append(child)
+        elif isinstance(item, (list, tuple)):
+            total += 2
+            stack.extend(item)
+        elif item is None or isinstance(item, bool):
+            total += 4
+        else:
+            total += len(str(item)) + 2
+        if total > MAX_REQUEST_PAYLOAD_CHARS:
+            return total
+    return total
+
+
+def _ensure_bounded_payload(value: object, field_name: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, list) and len(value) > MAX_REQUEST_LIST_ITEMS:
+        raise ValueError(f"{field_name} supports at most {MAX_REQUEST_LIST_ITEMS} items")
+    if _payload_chars(value) > MAX_REQUEST_PAYLOAD_CHARS:
+        raise ValueError(f"{field_name} exceeds the maximum payload size")
+
+
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
@@ -42,6 +84,11 @@ class ImageGenerationRequest(BaseModel):
     history_disabled: bool = True
     stream: bool | None = None
 
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> ImageGenerationRequest:
+        _ensure_bounded_payload(self.prompt, "prompt")
+        return self
+
 
 class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -49,36 +96,66 @@ class ChatCompletionRequest(BaseModel):
     prompt: str | None = None
     n: int | None = None
     stream: bool | None = None
-    modalities: list[str] | None = None
-    messages: list[dict[str, object]] | None = None
+    modalities: list[str] | None = Field(default=None, max_length=MAX_REQUEST_MODALITIES)
+    messages: list[dict[str, object]] | None = Field(default=None, max_length=MAX_REQUEST_LIST_ITEMS)
+
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> ChatCompletionRequest:
+        _ensure_bounded_payload(self.prompt, "prompt")
+        _ensure_bounded_payload(self.modalities, "modalities")
+        _ensure_bounded_payload(self.messages, "messages")
+        return self
 
 
 class ResponseCreateRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str | None = None
     input: object | None = None
-    tools: list[dict[str, object]] | None = None
+    tools: list[dict[str, object]] | None = Field(default=None, max_length=MAX_REQUEST_TOOLS)
     tool_choice: object | None = None
     stream: bool | None = None
+
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> ResponseCreateRequest:
+        _ensure_bounded_payload(self.input, "input")
+        _ensure_bounded_payload(self.tools, "tools")
+        return self
 
 
 class AnthropicMessageRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str | None = None
-    messages: list[dict[str, object]] | None = None
+    messages: list[dict[str, object]] | None = Field(default=None, max_length=MAX_REQUEST_LIST_ITEMS)
     system: object | None = None
     stream: bool | None = None
+
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> AnthropicMessageRequest:
+        _ensure_bounded_payload(self.messages, "messages")
+        _ensure_bounded_payload(self.system, "system")
+        return self
 
 
 class SearchRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
 
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> SearchRequest:
+        _ensure_bounded_payload(self.prompt, "prompt")
+        return self
+
 
 class EditableFileTaskRequest(BaseModel):
     prompt: str = ""
     kind: str = "ppt"
-    base64_images: list[str] = Field(default_factory=list)
+    base64_images: list[str] = Field(default_factory=list, max_length=MAX_REQUEST_REFERENCE_IMAGES)
     client_task_id: str | None = None
+
+    @model_validator(mode="after")
+    def _check_payload_bounds(self) -> EditableFileTaskRequest:
+        _ensure_bounded_payload(self.prompt, "prompt")
+        _ensure_bounded_payload(self.base64_images, "base64_images")
+        return self
 
 
 TRACE_REQUEST_HEADERS = {
@@ -142,7 +219,7 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
-        payload["n"] = parse_image_count(body.n)
+        payload["n"] = parse_image_count(body.n, maximum=config.image_max_n)
         for field in ("output_format", "frame_count", "frame_duration_ms"):
             if field not in body.model_fields_set:
                 payload.pop(field, None)

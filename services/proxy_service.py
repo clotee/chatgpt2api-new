@@ -12,6 +12,7 @@ from typing import Callable, Mapping
 from urllib import request as urllib_request
 from urllib.parse import quote, urlparse
 
+from curl_cffi import requests
 from curl_cffi.requests import Session
 
 from services.config import config
@@ -19,6 +20,7 @@ from services.storage.configuration_repository import (
     ProxyConfigurationRepository,
     proxy_configuration_repository,
 )
+from utils.helper import set_remote_fetch
 
 
 FlareSolverrRequestMethod = Callable[[str, bytes, dict[str, str], float], bytes]
@@ -1143,3 +1145,10 @@ def test_clearance(target_url: str = "https://chatgpt.com") -> dict:
 
 
 proxy_settings = ProxySettingsStore()
+
+
+def _proxied_remote_fetch(source: str, **kwargs):
+    return requests.get(source, **proxy_settings.build_session_kwargs(), **kwargs)
+
+
+set_remote_fetch(_proxied_remote_fetch)

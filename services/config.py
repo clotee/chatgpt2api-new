@@ -14,6 +14,7 @@ from contracts.settings_specification import (
     numeric_setting_spec,
 )
 from services.json_file import read_json_object, write_json_file
+from utils.log import set_log_level_provider
 from services.storage.base import StorageBackend
 from services.storage.configuration_repository import (
     AccountGroupRepository,
@@ -40,6 +41,12 @@ DEFAULT_BACKUP_INCLUDE = {
 }
 
 _DATABASE_SETTINGS_REFRESH_INTERVAL_SECONDS = 1.0
+
+# auth_key is resolved on every authenticated request; cache it briefly so the
+# config.json disk read is amortized. Changes to CHATGPT2API_AUTH_KEY or the
+# config.json "auth-key" field take effect within this TTL — auth-key has no
+# write-path invalidation, so the TTL is the only propagation delay.
+_AUTH_KEY_CACHE_TTL_SECONDS = 2.0
 
 DEFAULT_IMAGE_STORAGE = {
     "enabled": False,
@@ -408,8 +415,11 @@ def _promote_legacy_basic_settings(data: dict[str, object]) -> dict[str, object]
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
         return
-    if not str(settings.get("webdav_url") or "").strip():
+    webdav_url = str(settings.get("webdav_url") or "").strip()
+    if not webdav_url:
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
+    if urlsplit(webdav_url).scheme.lower() not in {"http", "https"}:
+        raise ValueError("WebDAV URL 仅支持 http/https")
     if not str(settings.get("webdav_password") or "").strip():
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
 
@@ -448,6 +458,7 @@ class ConfigStore:
         self._groups_repository = groups_repository or account_group_repository
         self.data = self._load()
         self._last_repository_refresh_at = monotonic()
+        self._auth_key_cache: tuple[float, str] | None = None
         self._storage_backend: StorageBackend | None = None
         if _is_invalid_auth_key(self.auth_key):
             raise ValueError(
@@ -484,10 +495,19 @@ class ConfigStore:
 
     @property
     def auth_key(self) -> str:
+        # TTL-cached and intentionally lock-free (immutable tuple, atomic
+        # assignment under the GIL); a rare concurrent miss costs one extra
+        # disk read. File/env changes propagate within _AUTH_KEY_CACHE_TTL_SECONDS.
+        now = monotonic()
+        cached = self._auth_key_cache
+        if cached is not None and now - cached[0] < _AUTH_KEY_CACHE_TTL_SECONDS:
+            return cached[1]
         bootstrap = read_json_object(self.path, name="config.json")
-        return _normalize_auth_key(
+        value = _normalize_auth_key(
             os.getenv("CHATGPT2API_AUTH_KEY") or bootstrap.get("auth-key")
         )
+        self._auth_key_cache = (now, value)
+        return value
 
     @property
     def refresh_account_interval_minute(self) -> int:
@@ -884,3 +904,5 @@ class ConfigStore:
 
 
 config = ConfigStore(CONFIG_FILE)
+
+set_log_level_provider(lambda: config.log_levels)

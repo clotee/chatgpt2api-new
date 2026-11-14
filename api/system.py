@@ -97,20 +97,20 @@ class ProxyGroupTestRequest(BaseModel):
 
 
 class ImageDeleteRequest(BaseModel):
-    paths: list[str] = []
+    paths: list[str] = Field(default_factory=list, max_length=5000)
     start_date: str = ""
     end_date: str = ""
     all_matching: bool = False
 
 class ImageDownloadRequest(BaseModel):
-    paths: list[str]
+    paths: list[str] = Field(max_length=5000)
 
 class ImageTagsRequest(BaseModel):
     path: str
-    tags: list[str]
+    tags: list[str] = Field(max_length=200)
 
 class LogDeleteRequest(BaseModel):
-    ids: list[str] = []
+    ids: list[str] = Field(default_factory=list, max_length=5000)
 class BackupDeleteRequest(BaseModel):
     key: str = ""
 

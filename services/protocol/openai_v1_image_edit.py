@@ -5,6 +5,7 @@ from typing import Any, Iterator
 
 from PIL import Image
 
+from services.config import config
 from services.image_failure import image_failure
 from services.protocol.conversation import (
     ConversationRequest,
@@ -55,7 +56,7 @@ def _composite_mask(
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     prompt = str(body.get("prompt") or "")
     model = str(body.get("model") or "gpt-image-2")
-    n = parse_image_count(body.get("n"))
+    n = parse_image_count(body.get("n"), maximum=config.image_max_n)
     size = body.get("size")
     quality = str(body.get("quality") or "auto")
     response_format = str(body.get("response_format") or "b64_json")

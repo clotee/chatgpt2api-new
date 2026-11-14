@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.image_task_contract import ImageTaskPage, ImageTaskRow
 from api.support import require_identity, resolve_image_base_url
+from services.config import config
 from services.content_filter import check_request
 from services.image_task_service import ImageTaskQueueFullError, image_task_service
 from services.log_service import LoggedCall
@@ -67,7 +68,7 @@ def create_router() -> APIRouter:
         authorization: str | None = Header(default=None),
     ):
         identity = require_identity(authorization)
-        n = parse_image_count(body.n)
+        n = parse_image_count(body.n, maximum=config.image_max_n)
         validate_image_output_request(body.model, body.output_format)
         await filter_or_log(LoggedCall(identity, "/api/image-tasks/generations", body.model, "文生图任务", request_text=body.prompt), body.prompt)
         try:

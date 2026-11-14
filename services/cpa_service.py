@@ -7,16 +7,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from curl_cffi.requests import Session
 
-from services.account_import_credentials import (
-    collect_import_diagnostic_values,
-    extract_import_credentials,
-)
+from services.account_import_credentials import extract_import_credentials
 from services.account_import_job import (
     RemoteAccountImportJob,
     RemoteImportJobCoordinator,
     normalize_import_error as _normalize_import_error,
     normalize_import_job as _normalize_import_job,
 )
+from services.account_operation_events import collect_import_error_context
 from services.account_processing import (
     account_processing_slot,
     account_processing_worker_count,
@@ -33,14 +31,10 @@ def _new_id() -> str:
 
 
 def _import_error_context(pool: dict, *sources: object) -> dict[str, tuple[str, ...]]:
-    sensitive_values, proxy_values = collect_import_diagnostic_values(
+    return collect_import_error_context(
         {"secret_key": pool.get("secret_key")},
         *sources,
     )
-    return {
-        "sensitive_values": sensitive_values,
-        "proxy_values": proxy_values,
-    }
 
 def _normalize_pool(raw: dict, *, fail_unfinished: bool = True) -> dict:
     secret_key = str(raw.get("secret_key") or "").strip()

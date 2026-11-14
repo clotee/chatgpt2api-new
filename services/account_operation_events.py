@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
+from services.account_import_credentials import collect_import_diagnostic_values
 from utils.diagnostics import sanitize_diagnostic_text
 
 
@@ -27,6 +28,17 @@ def _now_iso() -> str:
 def _clean_action(value: object) -> str:
     action = str(value or "").strip().lower()
     return action if _ACTION_PATTERN.fullmatch(action) else "account_operation"
+
+
+def collect_import_error_context(
+    *sources: object,
+) -> dict[str, tuple[str, ...]]:
+    """Collect secret and proxy values for sanitizing remote-import diagnostics."""
+    sensitive_values, proxy_values = collect_import_diagnostic_values(*sources)
+    return {
+        "sensitive_values": sensitive_values,
+        "proxy_values": proxy_values,
+    }
 
 
 def normalize_account_operation_event(

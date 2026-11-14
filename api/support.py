@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+from contextvars import ContextVar
 from pathlib import Path
 from threading import Event, Thread
 
@@ -7,10 +9,52 @@ from fastapi import HTTPException, Request
 
 from services.account_service import account_service
 from services.auth_service import auth_service
+from services.auth_throttle import auth_throttle
 from services.config import config
+from utils.log import logger
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 WEB_DIST_DIR = BASE_DIR / "web_dist"
+
+_client_ip_var: ContextVar[str] = ContextVar("chatgpt2api_client_ip", default="")
+
+
+def current_client_ip() -> str:
+    return _client_ip_var.get() or ""
+
+
+def _resolve_client_ip(scope: dict) -> str:
+    client = scope.get("client")
+    host = str(client[0]) if client else ""
+    if host not in {"127.0.0.1", "::1"}:
+        return host
+    xff = ""
+    for name, value in scope.get("headers") or []:
+        if name == b"x-forwarded-for":
+            xff = value.decode("latin-1")
+    entries = [part.strip() for part in xff.split(",") if part.strip()]
+    return entries[-1] if entries else host
+
+
+class ClientIPMiddleware:
+    """纯 ASGI 中间件：把客户端 IP 写入 contextvar 供认证限流使用。
+
+    仅当直接对端是 loopback（同机反向代理）时才采信 X-Forwarded-For
+    最后一跳，避免客户端伪造头绕过限流。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        token = _client_ip_var.set(_resolve_client_ip(scope))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _client_ip_var.reset(token)
 
 
 def extract_bearer_token(authorization: str | None) -> str:
@@ -22,16 +66,26 @@ def extract_bearer_token(authorization: str | None) -> str:
 
 def _legacy_admin_identity(token: str) -> dict[str, object] | None:
     auth_key = str(config.auth_key or "").strip()
-    if auth_key and token == auth_key:
+    if auth_key and hmac.compare_digest(token.encode("utf-8"), auth_key.encode("utf-8")):
         return {"id": "admin", "name": "管理员", "role": "admin"}
     return None
 
 
 def require_identity(authorization: str | None) -> dict[str, object]:
     token = extract_bearer_token(authorization)
+    client_ip = current_client_ip()
+    retry_after = auth_throttle.retry_after(client_ip, token)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "认证尝试过于频繁，请稍后重试"},
+            headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+        )
     identity = _legacy_admin_identity(token) or auth_service.authenticate(token)
     if identity is None:
+        auth_throttle.record_failure(client_ip, token)
         raise HTTPException(status_code=401, detail={"error": "密钥无效或已失效，请重新登录"})
+    auth_throttle.record_success(client_ip, token)
     return identity
 
 
@@ -81,26 +135,32 @@ def start_account_lifecycle_watcher(stop_event: Event) -> Thread:
                     account_service.resume_pending_auth_verifications()
                 expiring_tokens = account_service.list_expiring_access_tokens()
                 if expiring_tokens:
-                    print(
-                        "[account-watcher] renewing "
-                        f"{len(expiring_tokens)} expiring access tokens"
-                    )
+                    logger.info({
+                        "event": "account_watcher_renewing_expiring_access_tokens",
+                        "count": len(expiring_tokens),
+                    })
                     result = account_service.renew_expiring_access_tokens(expiring_tokens)
                     if result.get("errors"):
-                        print(f"[account-watcher] renewal errors: {result['errors']}")
+                        logger.warning({
+                            "event": "account_watcher_renewal_errors",
+                            "errors": result["errors"],
+                        })
 
                 limited_tokens = account_service.list_limited_tokens()
                 normal_tokens = account_service.list_normal_tokens()
                 if limited_tokens:
-                    print(
-                        "[account-watcher] syncing "
-                        f"{len(limited_tokens)} limited accounts "
-                        f"(skipping {len(normal_tokens)} healthy accounts, "
-                        f"recovering {len(pending_auth)} pending auth accounts)"
-                    )
+                    logger.info({
+                        "event": "account_watcher_syncing_limited_accounts",
+                        "limited": len(limited_tokens),
+                        "skipped_healthy": len(normal_tokens),
+                        "pending_auth": len(pending_auth),
+                    })
                     account_service.sync_accounts_and_quota(limited_tokens)
             except Exception as exc:
-                print(f"[account-watcher] fail {exc}")
+                logger.error({
+                    "event": "account_watcher_iteration_failed",
+                    "error": str(exc),
+                })
             stop_event.wait(config.refresh_account_interval_minute * 60)
 
     thread = Thread(target=worker, name="account-lifecycle-watcher", daemon=True)

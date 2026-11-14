@@ -10,5 +10,8 @@ from services.storage.database_storage import DatabaseStorageBackend
 def create_storage_backend(data_dir: Path) -> StorageBackend:
     """Create the Account Repository in the configured Application Database."""
     database_url = resolve_database_url(data_dir)
+    # Intentional console output: the selected Application Database is critical
+    # startup information that must reach the console even when configured log
+    # levels would filter an info-level logger record.
     print(f"[storage] Using application database: {display_database_url(database_url)}")
     return DatabaseStorageBackend(database_url)

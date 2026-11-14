@@ -11,16 +11,14 @@ from threading import Lock
 
 from curl_cffi.requests import Session
 
-from services.account_import_credentials import (
-    collect_import_diagnostic_values,
-    extract_import_credentials,
-)
+from services.account_import_credentials import extract_import_credentials
 from services.account_import_job import (
     RemoteAccountImportJob,
     RemoteImportJobCoordinator,
     normalize_import_error as _normalize_import_error,
     normalize_import_job as _normalize_import_job,
 )
+from services.account_operation_events import collect_import_error_context
 from services.account_processing import (
     account_processing_slot,
     account_processing_worker_count,
@@ -50,14 +48,6 @@ def _server_secret_source(server: dict) -> dict[str, object]:
         "password": server.get("password"),
         "api_key": server.get("api_key"),
         "proxy": server.get("proxy"),
-    }
-
-
-def _diagnostic_context(*sources: object) -> dict[str, tuple[str, ...]]:
-    sensitive_values, proxy_values = collect_import_diagnostic_values(*sources)
-    return {
-        "sensitive_values": sensitive_values,
-        "proxy_values": proxy_values,
     }
 
 
@@ -155,7 +145,7 @@ def _normalize_server(raw: dict, *, fail_unfinished: bool = True) -> dict:
         "import_job": _normalize_import_job(
             raw.get("import_job"),
             fail_unfinished=fail_unfinished,
-            **_diagnostic_context({"password": password, "api_key": api_key}),
+            **collect_import_error_context({"password": password, "api_key": api_key}),
         ),
     }
 
@@ -280,7 +270,7 @@ class Sub2APIConfig:
                 next_server["import_job"] = _normalize_import_job(
                     import_job,
                     fail_unfinished=False,
-                    **_diagnostic_context(_server_secret_source(server)),
+                    **collect_import_error_context(_server_secret_source(server)),
                 )
                 servers[index] = next_server
                 result = dict(next_server)
@@ -297,7 +287,7 @@ class Sub2APIConfig:
         normalized_job = _normalize_import_job(
             import_job,
             fail_unfinished=False,
-            **_diagnostic_context(_server_secret_source(server)),
+            **collect_import_error_context(_server_secret_source(server)),
         )
         return self._import_jobs.reserve("sub2api", server_id, normalized_job)
 
@@ -322,7 +312,7 @@ def _server_error_context(
     with _token_cache_lock:
         cached = _token_cache.get(server_id)
     cached_token = cached[0] if cached else ""
-    return _diagnostic_context(
+    return collect_import_error_context(
         _server_secret_source(server),
         {"access_token": cached_token},
         *sources,
@@ -344,7 +334,7 @@ def _login(base_url: str, email: str, password: str) -> tuple[str, float]:
             error = _normalize_import_error(
                 f"sub2api login failed: HTTP {response.status_code} {response.text[:200]}",
                 default_name="Sub2API login",
-                **_diagnostic_context({"password": password}),
+                **collect_import_error_context({"password": password}),
             )["error"]
             raise RuntimeError(error)
         payload = response.json()
@@ -352,7 +342,7 @@ def _login(base_url: str, email: str, password: str) -> tuple[str, float]:
         error = _normalize_import_error(
             exc,
             default_name="Sub2API login",
-            **_diagnostic_context({"password": password}),
+            **collect_import_error_context({"password": password}),
         )["error"]
         raise RuntimeError(error) from None
     finally:

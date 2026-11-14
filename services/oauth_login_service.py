@@ -33,6 +33,8 @@ from services.openai_oauth import (
     user_agent,
 )
 from services.proxy_service import proxy_settings
+from utils.diagnostics import sanitize_diagnostic_text
+from utils.log import logger
 
 
 class OAuthLoginError(Exception):
@@ -193,7 +195,7 @@ class OAuthLoginService:
     @staticmethod
     def _exchange_code(code: str, code_verifier: str, redirect_uri: str) -> dict[str, str]:
         """调用 /api/accounts/oauth/token 用 code+verifier 换 token 三件套。"""
-        kwargs = proxy_settings.build_session_kwargs(impersonate="chrome", verify=False)
+        kwargs = proxy_settings.build_session_kwargs(impersonate="chrome", verify=True)
         session = requests.Session(**kwargs)
         try:
             response = session.post(
@@ -234,13 +236,13 @@ class OAuthLoginService:
                     detail = str(response.text or "")[:300]
                 except Exception:
                     detail = ""
-            # 打到 docker logs 方便排错——OAuth 换 token 的失败原因往往只有这里能看到
-            print(
-                f"[oauth-login] /api/accounts/oauth/token rejected: "
-                f"status={response.status_code} detail={detail!r} "
-                f"raw_body={(getattr(response, 'text', '') or '')[:500]!r}",
-                flush=True,
-            )
+            # 记录到 docker logs 方便排错——OAuth 换 token 的失败原因往往只有这里能看到
+            logger.warning({
+                "event": "oauth_token_exchange_rejected",
+                "status": response.status_code,
+                "detail": sanitize_diagnostic_text(detail),
+                "raw_body": sanitize_diagnostic_text((getattr(response, "text", "") or "")[:500]),
+            })
             raise OAuthLoginError(
                 f"OpenAI 拒绝换 token (HTTP {response.status_code}){': ' + detail if detail else ''}"
             )

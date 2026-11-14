@@ -6,6 +6,7 @@ from typing import Any, Iterable, Iterator
 
 from fastapi import HTTPException
 
+from services.config import config
 from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
 from services.protocol.conversation import (
     ConversationRequest,
@@ -198,7 +199,7 @@ def chat_image_args(body: dict[str, Any]) -> tuple[str, str, int, list[tuple[byt
         stream=bool(body.get("stream")),
         has_references=bool(images),
     )
-    return model, prompt, parse_image_count(body.get("n")), images, base_url, output_format, frame_count, frame_duration_ms
+    return model, prompt, parse_image_count(body.get("n"), maximum=config.image_max_n), images, base_url, output_format, frame_count, frame_duration_ms
 
 
 def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:

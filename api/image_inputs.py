@@ -17,6 +17,7 @@ from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
+from services.config import config
 from utils.helper import parse_image_count
 
 ImageInput = tuple[bytes, str, str]
@@ -60,7 +61,7 @@ def _parse_bool(value: object) -> bool | None:
 
 def _parse_count(value: object) -> int:
     """解析生成数量：使用设置中的最小值 1 和最大值。"""
-    return parse_image_count(value)
+    return parse_image_count(value, maximum=config.image_max_n)
 
 
 def _payload_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
@@ -330,8 +331,28 @@ def _image_fetch_curl_options(parsed: ParseResult, addresses: tuple[str, ...]) -
     return options
 
 
+def _response_content_bytes(response: requests.Response) -> bytes:
+    """Materialize ``response.content`` for responses without ``iter_content``.
+
+    Only lightweight response doubles and eager implementations reach this
+    path — real curl-cffi streaming responses always implement
+    ``iter_content``. Sized content is rejected before it is copied; callers
+    still enforce the same cap on the returned bytes.
+    """
+    content = getattr(response, "content", b"")
+    if hasattr(content, "__len__") and len(content) > MAX_IMAGE_REFERENCE_BYTES:
+        raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
+    return bytes(content)
+
+
 def _read_response_limited(response: requests.Response) -> bytes:
     """Read a response without allowing an unbounded body allocation."""
+    # Reject advertised oversize bodies before the ``content`` fallbacks below
+    # have to materialize them; the chunked path re-checks the same cap.
+    headers = getattr(response, "headers", None) or {}
+    content_length = str(headers.get("content-length") or "").strip()
+    if content_length.isdigit() and int(content_length) > MAX_IMAGE_REFERENCE_BYTES:
+        raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
     data = bytearray()
     total = 0
     iterator = getattr(response, "iter_content", None)
@@ -349,15 +370,15 @@ def _read_response_limited(response: requests.Response) -> bytes:
             except TypeError:
                 # Lightweight response doubles often expose ``content`` but
                 # do not implement an iterable ``iter_content`` method.
-                data = bytearray(bytes(response.content))
+                data = bytearray(_response_content_bytes(response))
             if not data and hasattr(response, "content"):
                 # Preserve compatibility with eager response implementations
                 # that return no chunks even though ``content`` is populated.
-                data = bytearray(bytes(response.content))
+                data = bytearray(_response_content_bytes(response))
             if len(data) > MAX_IMAGE_REFERENCE_BYTES:
                 raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
         else:
-            data = bytes(response.content)
+            data = _response_content_bytes(response)
             if len(data) > MAX_IMAGE_REFERENCE_BYTES:
                 raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
             return data

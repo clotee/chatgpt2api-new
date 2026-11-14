@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from threading import Event
 
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse
 
 from api import accounts, ai, image_tasks, prompts, system
 from api.errors import install_exception_handlers
-from api.support import resolve_web_asset, start_account_lifecycle_watcher
+from api.support import ClientIPMiddleware, resolve_web_asset, start_account_lifecycle_watcher
 from services.account_service import account_service
 from services.backup_service import backup_service
 from services.config import config
@@ -111,11 +112,28 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 logger.error({"event": "dashboard_metrics_shutdown_sync_failed", "error": str(exc)})
             backup_service.stop()
-    app = FastAPI(title="chatgpt2api", version=app_version, lifespan=lifespan)
+    docs_enabled = os.environ.get("CHATGPT2API_ENABLE_DOCS", "").strip().lower() in {"1", "true", "yes"}
+    app = FastAPI(
+        title="chatgpt2api",
+        version=app_version,
+        lifespan=lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
+    )
     install_exception_handlers(app)
+    app.add_middleware(ClientIPMiddleware)
+    # Comma-separated CORS allowlist. Empty (default) means same-origin only —
+    # the bundled Vue UI is served by this app and needs no CORS headers.
+    # CHATGPT2API_CORS_ORIGINS="*" restores the previous wildcard behavior.
+    cors_origins = [
+        origin.strip()
+        for origin in os.environ.get("CHATGPT2API_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

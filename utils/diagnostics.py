@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -133,18 +135,33 @@ def _collect_diagnostic_values(
     value: object,
     sensitive_values: list[object],
     proxy_values: list[object],
+    *,
+    is_secret_key=None,
 ) -> None:
+    secret_check = is_secret_key or (lambda key: key in _DIAGNOSTIC_SECRET_KEYS)
     if isinstance(value, dict):
         for key, item in value.items():
-            normalized_key = str(key).strip().lower().replace("-", "_")
-            if normalized_key in _DIAGNOSTIC_SECRET_KEYS and item not in (None, ""):
+            normalized_key = (
+                str(key).strip().lower().replace("-", "_").replace(" ", "_")
+            )
+            if secret_check(normalized_key) and item not in (None, ""):
                 sensitive_values.append(item)
             elif normalized_key in _DIAGNOSTIC_PROXY_KEYS and item not in (None, ""):
                 proxy_values.append(item)
-            _collect_diagnostic_values(item, sensitive_values, proxy_values)
+            _collect_diagnostic_values(
+                item,
+                sensitive_values,
+                proxy_values,
+                is_secret_key=is_secret_key,
+            )
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _collect_diagnostic_values(item, sensitive_values, proxy_values)
+            _collect_diagnostic_values(
+                item,
+                sensitive_values,
+                proxy_values,
+                is_secret_key=is_secret_key,
+            )
 
 
 def _scrub_diagnostic_value(
@@ -207,6 +224,145 @@ def scrub_diagnostic_value(
         collected_proxy_values,
     )
     return _scrub_diagnostic_value(
+        value,
+        collected_sensitive_values,
+        collected_proxy_values,
+    )
+
+
+_LOG_SECRET_KEY_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "authorization",
+    "cookie",
+    "apikey",
+    "api_key",
+)
+
+_LOG_DATA_URL_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
+_LOG_JSON_B64_RE = re.compile(r'("b64_json"\s*:\s*")([A-Za-z0-9+/=]+)(")')
+
+
+def _normalized_log_key(key: object) -> str:
+    return str(key).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _is_log_secret_key(normalized_key: str) -> bool:
+    if normalized_key in _DIAGNOSTIC_SECRET_KEYS or normalized_key == "dx":
+        return True
+    if normalized_key == "key" or normalized_key.endswith("_key"):
+        return True
+    return any(part in normalized_key for part in _LOG_SECRET_KEY_PARTS)
+
+
+def _is_log_base64_key(normalized_key: str) -> bool:
+    return "base64" in normalized_key or normalized_key == "b64_json"
+
+
+def _mask_log_base64(value: str) -> str:
+    def _mask(text: str, keep: int) -> str:
+        return text if len(text) <= keep else f"{text[:keep]}..."
+
+    if value.startswith("data:") and ";base64," in value:
+        header, _, data = value.partition(",")
+        return f"{header},{_mask(data, 24)} (base64 len={len(data)})"
+    return f"{_mask(value, 24)} (base64 len={len(value)})"
+
+
+def _is_log_base64_string(value: str) -> bool:
+    if len(value) < 64 or len(value) % 4 != 0:
+        return False
+    if not any(char in value for char in "+/="):
+        return False
+    try:
+        base64.b64decode(value, validate=True)
+        return True
+    except (binascii.Error, ValueError):
+        return False
+
+
+def _mask_log_data_urls(value: str) -> str:
+    sanitized = _LOG_DATA_URL_RE.sub(
+        lambda match: _mask_log_base64(match.group(0)),
+        value,
+    )
+    return _LOG_JSON_B64_RE.sub(
+        lambda match: (
+            f"{match.group(1)}{_mask_log_base64(match.group(2))}{match.group(3)}"
+        ),
+        sanitized,
+    )
+
+
+def _sanitize_log_string(
+    value: str,
+    sensitive_values: list[object],
+    proxy_values: list[object],
+) -> str:
+    stripped = value.strip()
+    if stripped.startswith("data:") and ";base64," in stripped:
+        masked = _mask_log_base64(stripped)
+    elif _is_log_base64_string(stripped):
+        masked = _mask_log_base64(stripped)
+    else:
+        masked = _mask_log_data_urls(value)
+    return sanitize_diagnostic_text(
+        masked,
+        sensitive_values=sensitive_values,
+        proxy_values=proxy_values,
+    )
+
+
+def _scrub_log_value(
+    value: object,
+    sensitive_values: list[object],
+    proxy_values: list[object],
+) -> object:
+    if isinstance(value, dict):
+        result: dict[object, object] = {}
+        for key, item in value.items():
+            normalized_key = _normalized_log_key(key)
+            if isinstance(item, str) and _is_log_secret_key(normalized_key):
+                result[key] = "[credential]"
+            elif isinstance(item, str) and _is_log_base64_key(normalized_key):
+                result[key] = _mask_log_base64(item)
+            else:
+                result[key] = _scrub_log_value(
+                    item,
+                    sensitive_values,
+                    proxy_values,
+                )
+        return result
+    if isinstance(value, list):
+        return [
+            _scrub_log_value(item, sensitive_values, proxy_values)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _scrub_log_value(item, sensitive_values, proxy_values)
+            for item in value
+        )
+    if isinstance(value, str):
+        return _sanitize_log_string(value, sensitive_values, proxy_values)
+    return value
+
+
+def sanitize_log_value(value: object) -> object:
+    """Single-owner sanitizer for Logger output: credential keys, literal
+    secret values, auth headers, URLs and embedded base64 payloads."""
+    collected_sensitive_values: list[object] = []
+    collected_proxy_values: list[object] = []
+    _collect_diagnostic_values(
+        value,
+        collected_sensitive_values,
+        collected_proxy_values,
+        is_secret_key=_is_log_secret_key,
+    )
+    return _scrub_log_value(
         value,
         collected_sensitive_values,
         collected_proxy_values,

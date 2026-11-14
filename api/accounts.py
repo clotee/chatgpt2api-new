@@ -8,6 +8,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -53,9 +54,16 @@ from services.sub2api_service import (
 )
 from utils.diagnostics import sanitize_diagnostic_text
 from utils.helper import anonymize_token
+from utils.log import logger
 
 
 _ACCOUNT_OPERATION_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _validate_remote_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail={"error": "base_url must be a valid http(s) URL"})
 
 
 def _schedule_account_operation(coroutine: Any) -> Any:
@@ -68,8 +76,8 @@ def _schedule_account_operation(coroutine: Any) -> Any:
 
 class AccountSelectionScope(BaseModel):
     mode: Literal["explicit", "filter", "all"] = "explicit"
-    account_ids: list[str] = Field(default_factory=list)
-    excluded_account_ids: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    excluded_account_ids: list[str] = Field(default_factory=list, max_length=5000)
     keyword: str = ""
     status: str = "all"
     group_id: str = "all"
@@ -81,8 +89,8 @@ class AccountSelectionPreviewRequest(BaseModel):
 
 
 class AccountCreateRequest(BaseModel):
-    tokens: list[str] = Field(default_factory=list)
-    accounts: list[dict[str, Any]] = Field(default_factory=list)
+    tokens: list[str] = Field(default_factory=list, max_length=5000)
+    accounts: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
     sync_after_import: bool | None = None
     refresh: bool | None = None
     restore: bool = False
@@ -91,20 +99,20 @@ class AccountCreateRequest(BaseModel):
 
 
 class AccountDeleteRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    tokens: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    tokens: list[str] = Field(default_factory=list, max_length=5000)
     selection: AccountSelectionScope | None = None
 
 
 class AccountImportCleanupRequest(BaseModel):
-    access_tokens: list[str] = Field(default_factory=list)
-    account_ids: list[str] = Field(default_factory=list)
+    access_tokens: list[str] = Field(default_factory=list, max_length=5000)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
     remove: bool = False
 
 
 class AccountOperationRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    access_tokens: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    access_tokens: list[str] = Field(default_factory=list, max_length=5000)
     selection: AccountSelectionScope | None = None
 
 
@@ -113,8 +121,8 @@ class AccountMemoryRequest(AccountOperationRequest):
 
 
 class AccountExportRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    access_tokens: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    access_tokens: list[str] = Field(default_factory=list, max_length=5000)
     format: Literal["json", "zip", "txt"] = "json"
     selection: AccountSelectionScope | None = None
 
@@ -131,16 +139,16 @@ class AccountUpdateRequest(BaseModel):
 
 
 class AccountBatchUpdateRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    access_tokens: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    access_tokens: list[str] = Field(default_factory=list, max_length=5000)
     selection: AccountSelectionScope | None = None
     status: Literal["正常", "限流", "异常", "禁用"] | None = None
     operation: Literal["update", "enable", "disable", "reset"] | None = None
 
 
 class AccountGroupBindRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    access_tokens: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    access_tokens: list[str] = Field(default_factory=list, max_length=5000)
     selection: AccountSelectionScope | None = None
     group_id: str = ""
 
@@ -168,7 +176,7 @@ class CPAPoolUpdateRequest(BaseModel):
 
 
 class CPAImportRequest(BaseModel):
-    names: list[str] = Field(default_factory=list)
+    names: list[str] = Field(default_factory=list, max_length=5000)
     target_group_id: str | None = None
 
 
@@ -193,12 +201,12 @@ class Sub2APIServerUpdateRequest(BaseModel):
 class Sub2APIImportGroupBinding(BaseModel):
     remote_group_id: str = ""
     name: str = ""
-    account_ids: list[str] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
 
 
 class Sub2APIImportRequest(BaseModel):
-    account_ids: list[str] = Field(default_factory=list)
-    group_bindings: list[Sub2APIImportGroupBinding] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list, max_length=5000)
+    group_bindings: list[Sub2APIImportGroupBinding] = Field(default_factory=list, max_length=5000)
     create_account_groups: bool = True
     target_group_id: str | None = None
 
@@ -2266,17 +2274,16 @@ def create_router() -> APIRouter:
     ):
         """收用户从浏览器抓回的 callback URL / code，换出 token 三件套并落盘。"""
         require_admin(authorization)
-        print(
-            "[oauth-login] finish called: "
-            f"session_present={bool(body.session_id)}, "
-            f"callback_present={bool(body.callback)}, "
-            f"callback_length={len(body.callback or '')}",
-            flush=True,
-        )
+        logger.info({
+            "event": "oauth_login_finish_called",
+            "session_present": bool(body.session_id),
+            "callback_present": bool(body.callback),
+            "callback_length": len(body.callback or ""),
+        })
         try:
             tokens = await run_in_threadpool(oauth_login_service.finish, body.session_id, body.callback)
         except OAuthLoginError as exc:
-            print(f"[oauth-login] finish rejected: {type(exc).__name__}", flush=True)
+            logger.warning({"event": "oauth_login_finish_rejected", "error_type": type(exc).__name__})
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
         payload = {
@@ -2314,6 +2321,7 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         if not body.base_url.strip():
             raise HTTPException(status_code=400, detail={"error": "base_url is required"})
+        _validate_remote_base_url(body.base_url)
         if not body.secret_key.strip():
             raise HTTPException(status_code=400, detail={"error": "secret_key is required"})
         pool = cpa_config.add_pool(name=body.name, base_url=body.base_url, secret_key=body.secret_key)
@@ -2322,6 +2330,8 @@ def create_router() -> APIRouter:
     @router.post("/api/cpa/pools/{pool_id}")
     async def update_cpa_pool(pool_id: str, body: CPAPoolUpdateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
+        if body.base_url is not None and body.base_url.strip():
+            _validate_remote_base_url(body.base_url)
         try:
             pool = cpa_config.update_pool(pool_id, body.model_dump(exclude_none=True))
         except ValueError as exc:
@@ -2392,6 +2402,7 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         if not body.base_url.strip():
             raise HTTPException(status_code=400, detail={"error": "base_url is required"})
+        _validate_remote_base_url(body.base_url)
         has_login = body.email.strip() and body.password.strip()
         has_api_key = bool(body.api_key.strip())
         if not has_login and not has_api_key:
@@ -2409,6 +2420,8 @@ def create_router() -> APIRouter:
     @router.post("/api/sub2api/servers/{server_id}")
     async def update_sub2api_server(server_id: str, body: Sub2APIServerUpdateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
+        if body.base_url is not None and body.base_url.strip():
+            _validate_remote_base_url(body.base_url)
         try:
             server = sub2api_config.update_server(server_id, body.model_dump(exclude_none=True))
         except ValueError as exc:

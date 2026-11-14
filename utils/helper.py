@@ -16,9 +16,17 @@ from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 from curl_cffi.requests.models import STREAM_END
 from fastapi import HTTPException
-from services.proxy_service import proxy_settings
 from utils.log import logger
 from utils.svg import svg_dimensions
+
+_remote_fetch: Callable[..., Any] | None = None
+
+
+def set_remote_fetch(fetcher: Callable[..., Any] | None) -> None:
+    """注入远程图片抓取实现（由 services 层在启动时注册代理配置），
+    使 utils 不反向依赖 services.proxy_service。"""
+    global _remote_fetch
+    _remote_fetch = fetcher
 
 WEB_IMAGE_MODELS = (
     "gpt-image-2",
@@ -542,12 +550,12 @@ def _decode_message_image_url(value: object) -> tuple[bytes, str] | None:
         return None
 
     try:
-        response = requests.get(
+        fetch = _remote_fetch or (lambda url, **kwargs: requests.get(url, **kwargs))
+        response = fetch(
             source,
             headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": "chatgpt2api vision fetcher"},
             timeout=REMOTE_IMAGE_TIMEOUT_SECONDS,
             allow_redirects=True,
-            **proxy_settings.build_session_kwargs(),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: {exc}"}) from exc
@@ -650,15 +658,12 @@ def extract_chat_prompt(body: dict[str, object]) -> str:
     return "\n".join(prompt_parts).strip()
 
 
-def parse_image_count(raw_value: object) -> int:
-    from services.config import config
-
+def parse_image_count(raw_value: object, *, maximum: int) -> int:
     missing = raw_value is None or (isinstance(raw_value, str) and not raw_value.strip())
     try:
         value = 1 if missing else int(raw_value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail={"error": "n must be an integer"}) from exc
-    maximum = config.image_max_n
     if value < 1 or value > maximum:
         raise HTTPException(
             status_code=400,

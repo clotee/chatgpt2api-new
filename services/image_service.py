@@ -21,6 +21,8 @@ from services.image_storage_service import (
 from services.image_tags_service import load_tags, remove_tags
 
 THUMBNAIL_SIZE = (320, 320)
+MAX_ZIP_DOWNLOAD_FILES = 500
+MAX_ZIP_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _cleanup_empty_dirs(root: Path) -> None:
@@ -40,6 +42,7 @@ def get_image_response(relative_path: str) -> FileResponse | Response:
     if image_storage_service.has_local(relative_path):
         rel = normalize_image_relative_path(relative_path)
         if Path(rel).suffix.lower() == ".svg":
+            headers["Content-Security-Policy"] = "sandbox"
             return Response(content=image_storage_service.get_bytes(rel), media_type="image/svg+xml", headers=headers)
         return FileResponse(
             image_local_path(rel, require_file=True),
@@ -48,7 +51,10 @@ def get_image_response(relative_path: str) -> FileResponse | Response:
         )
     rel = normalize_image_relative_path(relative_path)
     payload = image_storage_service.get_bytes(rel)
-    return Response(content=payload, media_type=image_media_type(rel, payload), headers=headers)
+    media_type = image_media_type(rel, payload)
+    if media_type == "image/svg+xml":
+        headers["Content-Security-Policy"] = "sandbox"
+    return Response(content=payload, media_type=media_type, headers=headers)
 
 
 def _thumbnail_path(relative_path: str) -> Path:
@@ -103,6 +109,7 @@ def get_thumbnail_response(relative_path: str) -> FileResponse | Response:
     }
     rel = normalize_image_relative_path(relative_path)
     if Path(rel).suffix.lower() == ".svg":
+        headers["Content-Security-Policy"] = "sandbox"
         return Response(content=image_storage_service.get_bytes(rel), media_type="image/svg+xml", headers=headers)
     return FileResponse(ensure_thumbnail(rel), headers=headers)
 
@@ -312,9 +319,15 @@ def delete_images(paths: list[str] | None = None, start_date: str = "", end_date
 
 
 def download_images_zip(paths: list[str]) -> io.BytesIO:
+    if len(paths) > MAX_ZIP_DOWNLOAD_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"zip download supports at most {MAX_ZIP_DOWNLOAD_FILES} images",
+        )
     root = config.images_dir.resolve()
     buf = io.BytesIO()
     added = 0
+    total_bytes = 0
     used_names: set[str] = set()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in paths:
@@ -329,6 +342,9 @@ def download_images_zip(paths: list[str]) -> io.BytesIO:
                 payload = image_storage_service.get_bytes(rel)
             except Exception:
                 continue
+            total_bytes += len(payload)
+            if total_bytes > MAX_ZIP_DOWNLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="zip download exceeds 2GB size limit")
             name = path.name
             if name in used_names:
                 stem = path.stem

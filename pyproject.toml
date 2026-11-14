@@ -5,16 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "chatgpt2api"
 version = "3.2.9"
-description = "Add your description here"
+description = "将 ChatGPT 官网能力接入 OpenAI 兼容 API，并提供面向多账号、图片任务与自托管场景的管理控制台。"
 readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.13"
 dependencies = [
     "curl-cffi>=0.15.0",
     "fastapi>=0.136.0",
-    "pillow>=12.2.0",
+    "pillow>=13.0.0",
     "pybase64>=1.4.3",
-    "python-multipart>=0.0.26",
+    "python-multipart>=0.0.31",
     "tiktoken>=0.12.0",
     "uvicorn>=0.44.0",
     "sqlalchemy>=2.0.0",
@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "httpx>=0.28.1",
     "pytest>=8.4.2,<10",
+    "ruff>=0.17.5",
 ]
 
 [tool.setuptools]
@@ -41,3 +42,11 @@ services = ["*.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+# 保守规则集：只检查语法错误（E9）与 Pyflakes（F），避免引入大量风格噪音。
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E9", "F"]

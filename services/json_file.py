@@ -7,6 +7,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+# This module is a low-level persistence fallback: it must stay usable before
+# (or below) the logging stack — utils.log lazily imports services.config,
+# which itself depends on storage — so warnings intentionally go straight to
+# stderr instead of the application logger.
+
 
 def _backup_path(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".bak")
