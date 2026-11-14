@@ -51,7 +51,7 @@
 
 ## 分支策略（本仓库约定，2026-11 确立）
 
-- `feat/security-stability-hardening` 是常驻开发与发布分支：全部迭代、
+- `dev` 是常驻开发与发布分支：全部迭代、
   修复和发布候选都在此分支上进行，发布 tag 从该分支打。
 - `main` 只跟随原作者仓库 `upstream`（github.com/yukkcat/chatgpt2api）
   保持更新，不在其上直接开发。同步方式：`git fetch upstream` 后在
