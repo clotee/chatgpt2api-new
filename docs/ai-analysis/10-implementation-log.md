@@ -511,3 +511,62 @@ ruff 引入、CI 冒烟。**未提交 git**（按规则等待用户授权；工�
 - **T-19 非 root 容器**（D6）
 - T-09d verify_existing TTL 节流（候选遗留）
 - ruff 20 项基线清理（建议按文件所有者分批，17 项可 `--fix` 自动修）
+
+## Wave 4 — Phase 4 结构性重构 + 测试基线入库（已完成，待 E2E 验收）
+
+用户决策：测试入库批准 / Phase 4 全部四项 / E2E 后发布。分支策略确立：
+`dev` 为常驻开发+发布分支，`main` 仅跟随 upstream（yukkcat）。
+
+### 测试基线入库（`0dcda4a`）
+
+- `.gitignore` 移除 `tests/`；`backend.md` 修订：覆盖公共 Interface 的
+  回归测试入库，临时脚本仍不入库；CI verify job 新增 `pytest tests/`。
+- 契约基线 24 项 + 图片纯函数护栏 11 项 = **35 项全绿**。
+
+### T-22 api/accounts.py → api/accounts/（`1c0cd45`）
+
+2508 行 → 7 模块包（`_shared` 1140 + accounts/groups/operations/
+remote_import/auth_keys + facade）。`create_router` 按原装饰器顺序聚合
+`register_*`；43 条 APIRouter 路由逐一比对路径/方法/签名/顺序一致。
+
+### T-21 account_service.py → account_service/（11 commits，`a1633c3`~`9614fd7`）
+
+5303 行 → 12 模块，**Mixin 组合方案**（零调用点改写）：
+`_shared`(异常/别名) `_primitives`(39纯方法) `_core`(init+状态+CAS写路径)
+`_progress` `_mutations`(19) `_refresh`(15) `_remote_check`(14)
+`_selection`(12) `_sync`(2) `_memory`(1) `_pool`(14) + `__init__.py`
+组合 `AccountService` + 单例 wiring + 6 名 re-export。
+150 方法全部归位；3 处 `AccountService.` 字面量改为 Mixin 名；
+函数内 import（openai_backend_api/proxy_service/DATA_DIR）全部保留。
+
+### T-23a protocol 层包化（`ed6dc6a` + `a1a6bfa`）
+
+- `conversation.py` 3279 行 → 7 模块包；146 个顶层名字 facade 全量
+  re-export（含 `ImageGenerationError` de-facto re-export）；
+  `_generate_single_image` 662 行**verbatim 搬迁**（nonlocal 合法）。
+- `openai_backend_api.py` 3894 行 → 9 模块包（constants/core mixin/
+  memory/conversation_mgmt/search/editable/image_results/codex + facade）；
+  133 方法中 130 verbatim；8 处 `OpenAIBackendAPI.` 字面量经
+  staticmethod→classmethod+`cls.` 修复。
+
+### T-23b / T-24 处置
+
+- T-23b（`SingleImageRunner` 状态对象重构）：**暂缓**——阶段 A 已
+  verbatim 搬迁，状态机隐式依赖需独立评估+图片链路手工回归，
+  不阻塞当前交付。
+- T-24：任务卡本身为"改动触及时拆分"策略，无专项重构。
+
+### 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| pytest tests/ | ✅ 35 passed |
+| compileall api contracts services utils main.py | ✅ |
+| import main 路由数 | ✅ 112 |
+| ruff check 全仓 | ✅ 0（T-23a 后补修 2 处测试文件未用 import） |
+| 公共 Interface | ✅ 6+146+5 re-export 名全部可导入 |
+| 最大单文件 | account_service/_mutations ~1000、_remote_check ~1000、openai_backend_api/_editable ~850 —— 均 <2000 验收线 |
+
+### 未验证（需 E2E）
+
+真实 OAuth/上游图片/记忆/分组/批量链路——`docs/ai-analysis/12-e2e-validation-dev.md`。
