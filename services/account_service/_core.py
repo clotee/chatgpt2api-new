@@ -1,16 +1,8 @@
 from __future__ import annotations
 
 import time
-from ._memory import AccountMemoryMixin
-from ._mutations import AccountMutationMixin
-from ._pool import PoolHealthMixin
 from ._primitives import AccountPrimitivesMixin
-from ._progress import RefreshProgressMixin
-from ._refresh import TokenRefreshMixin
-from ._remote_check import RemoteCheckMixin
-from ._selection import ImageSelectionMixin
 from ._shared import _CredentialGeneration
-from ._sync import AccountSyncMixin
 from collections import deque
 from concurrent.futures import Future
 from copy import deepcopy
@@ -18,13 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from services.account_credentials import ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 from services.account_operation_events import ACCOUNT_OPERATION_EVENT_LIMIT
-from services.config import config
 from services.storage.base import StorageBackend, StorageRevisionConflictError
 from threading import Condition, Lock
 from typing import Any, Callable
 from utils.diagnostics import sanitize_diagnostic_text
 
-class AccountService(AccountPrimitivesMixin, RefreshProgressMixin, AccountMutationMixin, TokenRefreshMixin, RemoteCheckMixin, ImageSelectionMixin, AccountSyncMixin, AccountMemoryMixin, PoolHealthMixin):
+class AccountServiceCore(AccountPrimitivesMixin):
     """账号池服务，使用 token -> account 的 dict 保存账号。"""
 
     _ACCESS_TOKEN_REFRESH_SKEW_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
@@ -533,7 +524,7 @@ class AccountService(AccountPrimitivesMixin, RefreshProgressMixin, AccountMutati
             "capability_failed_at",
         ):
             normalized.pop(key, None)
-        normalized["created_at"] = normalized.get("created_at") or AccountService._now()
+        normalized["created_at"] = normalized.get("created_at") or AccountPrimitivesMixin._now()
         return normalized
 
     def _resolve_access_token_locked(self, access_token: str) -> str:
@@ -708,11 +699,3 @@ class AccountService(AccountPrimitivesMixin, RefreshProgressMixin, AccountMutati
                 account["image_inflight"] = int(self._image_inflight.get(token, 0))
                 result.append(account)
             return result
-
-from services.proxy_management_service import proxy_management_service
-
-account_service = AccountService(
-    config.get_storage_backend(),
-    proxy_reference_mutation=proxy_management_service.mutate_assignment_references,
-)
-proxy_management_service.bind_account_provider(account_service.list_accounts)
