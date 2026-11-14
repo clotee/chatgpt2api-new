@@ -570,3 +570,56 @@ remote_import/auth_keys + facade）。`create_router` 按原装饰器顺序聚�
 ### 未验证（需 E2E）
 
 真实 OAuth/上游图片/记忆/分组/批量链路——`docs/ai-analysis/12-e2e-validation-dev.md`。
+
+## Wave 5 — T-23b 状态机重构 + T-19 非 root 容器（已完成，待 E2E 验收）
+
+### T-23b `SingleImageRunner` 状态对象（`6e61593` + `da8e156`）
+
+- 规格：`docs/ai-analysis/15-t23b-runner-design.md`；实现仅改
+  `services/protocol/conversation/_runner.py`（+691/−599）。
+- 结构：`@dataclass SingleImageRunner` 承载跨迭代状态，
+  `@dataclass ImageSlotAttempt` 承载每轮 attempt 上下文；
+  `while True` 状态机保留在 `run()`，`_acquire_token` /
+  `_resolve_account` / `_open_backend_and_egress` / `_consume_stream` /
+  `_normalize_image_error` / `_finalize_image_slot` /
+  `_retry_with_different_account` 为阶段方法；
+  `_generate_single_image` 签名与返回契约不变。
+- 10 项语义核对全部保留（attempt 每轮重建、fallback-proxy continue
+  跳过 finalize、retry_error 传播、pending_switch 写回时序、
+  monitor_attempt 共享 request、account_email 晚绑定、
+  finally egress/backend 清理、image_attempts 累计）；
+  mock 冒烟 3 场景（成功/切号/代理回退）通过。
+- 有意偏差：`ImageSlotAttempt.stream_started`（原闭包 cell 必需）；
+  方法命名沿用原闭包名。
+- E2E 待验路径：message_as_error、pool 耗尽 retry_error、
+  quota_consumed、ImageEgressDeadlineError、text_review。
+
+### T-19/D6 非 root 容器（`39dc908`）
+
+- `Dockerfile`：新增 `app` 用户（UID/GID 1000，`APP_UID`/`APP_GID`
+  build-arg 可调）、`chown -R app:app /opt/chatgpt2api /app`
+  （cp -a 同 UID 属主保留在 `set -eu` 下的前提）、
+  `ENV HOME=/home/app UV_PYTHON_PREFERENCE=only-system
+  UV_CACHE_DIR=/tmp/uv-cache`、`USER app:app`。
+- `docs/deployment.md`：新增"非 root 运行与宿主机权限"章节——
+  存量部署一次性属主迁移（data/ chown、config.json 可读、
+  命名卷重建或 helper 容器改属主）、Linux UID 失配风险、
+  Docker Desktop 免处理说明、NET_BIND_SERVICE 依赖。
+- 可行性评估结论：全部运行时写入集中于 `/app` 命名卷与
+  `/app/data` 绑定挂载，非 root 可行；端口 80 依赖 Docker 默认
+  能力集（当前 compose 未 cap_drop）。
+
+### 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| pytest tests/ | ✅ 35 passed |
+| ruff check | ✅ 0 |
+| import main 路由数 | ✅ 112 |
+| upstream/main 同步 | ✅ main 与 upstream/main 零分叉（0/0） |
+
+### 未验证（需 E2E/部署冒烟）
+
+真实图片生成/编辑/切号/代理回退链路（T-23b）、非 root 容器实际
+启动与卷写入（T-19）——均需真实环境，清单见
+`docs/ai-analysis/12-e2e-validation-dev.md`。
