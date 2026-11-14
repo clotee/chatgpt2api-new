@@ -33,10 +33,7 @@ jobs:
           uv sync --frozen
           uv run python -m compileall -q api contracts services utils main.py
 
-      # 基线尚有历史 F 类问题（见 docs/ai-analysis 实施记录），先以告警方式引入，
-      # 待基线清理后移除 continue-on-error 恢复为阻断门禁。
       - name: Lint backend
-        continue-on-error: true
         run: uv run ruff check
 
       - name: Import smoke test
