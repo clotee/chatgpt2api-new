@@ -51,7 +51,6 @@ test_batch_output/
 skills/
 standalone/
 test/
-tests/
 web-vue/tests/
 scripts/test_*.py
 scripts/image_upscale/node_modules/

@@ -39,6 +39,9 @@ jobs:
       - name: Import smoke test
         run: CHATGPT2API_AUTH_KEY=ci-smoke uv run python -c "import main"
 
+      - name: Run tests
+        run: CHATGPT2API_AUTH_KEY=ci-smoke uv run pytest tests/ -q
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
