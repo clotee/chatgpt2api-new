@@ -3,8 +3,6 @@
 import json
 from time import monotonic
 
-import pytest
-
 import services.config as config_module
 from services.config import ConfigStore
 

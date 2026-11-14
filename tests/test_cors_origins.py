@@ -1,6 +1,5 @@
 """T-20 regression: CHATGPT2API_CORS_ORIGINS allowlist (default same-origin)."""
 
-import pytest
 from fastapi.testclient import TestClient
 from starlette.middleware.cors import CORSMiddleware
 
