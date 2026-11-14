@@ -2,106 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import time
+from ._shared import ImageAccountSelectionError, OAuthRefreshError, RefreshCredentialsChangedError, TerminalRefreshTokenError, _CredentialGeneration, _RemoteCheckMarker
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from services.account_credentials import ACCESS_TOKEN_REFRESH_SKEW_SECONDS, access_token_expires_in_seconds, access_token_issued_at, decode_access_token_payload, project_upstream_credential_availability
+from services.account_operation_events import ACCOUNT_OPERATION_EVENT_LIMIT, normalize_account_operation_event
+from services.account_processing import account_processing_batch, account_processing_slot, account_processing_worker_count
+from services.config import config
+from services.image_failure import ImageFailure, classify_image_exception
+from services.log_service import LOG_TYPE_ACCOUNT, log_service
+from services.storage.base import StorageBackend, StorageMutation, StorageRevisionConflictError
 from threading import Condition, Lock, Thread
 from typing import Any, Callable
-from uuid import uuid4
-
-from services.account_credentials import (
-    ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    access_token_expires_in_seconds,
-    access_token_issued_at,
-    decode_access_token_payload,
-    project_upstream_credential_availability,
-)
-from services.account_processing import (
-    account_processing_batch,
-    account_processing_slot,
-    account_processing_worker_count,
-)
-from services.account_operation_events import (
-    ACCOUNT_OPERATION_EVENT_LIMIT,
-    normalize_account_operation_event,
-)
-from services.config import config
-from services.image_failure import ImageFailure, classify_image_exception, image_failure
-from services.log_service import (
-    LOG_TYPE_ACCOUNT,
-    log_service,
-)
-from services.storage.base import (
-    StorageBackend,
-    StorageMutation,
-    StorageRevisionConflictError,
-)
 from utils.diagnostics import sanitize_diagnostic_text
 from utils.helper import anonymize_token
-
-_RemoteCheckMarker = tuple[str, str, str, str, bool | None, str, str]
-_CredentialGeneration = tuple[str, str, str]
-
-
-
-class ImageAccountSelectionError(RuntimeError):
-    """图片账号调度失败。
-
-    这是“本次请求为什么没拿到账号”的错误，不等同于账号持久状态。
-    账号是否限流/异常仍由远程配额确认或鉴权结果决定。
-    """
-
-    # 控制流只认两个 pool outcomes；deadline_exceeded is request-scoped and
-    # never changes a persisted Upstream Account state.
-    #   quota_exhausted -> 远程确认额度耗尽，告诉客户端别重试（429）
-    #   unavailable     -> 其它一切（没号/全忙/预检失败/上游波动），可重试（503）
-    DEFAULTS: dict[str, tuple[int, str, str]] = {
-        "quota_exhausted": (429, "insufficient_quota", "insufficient_quota"),
-        "unavailable": (503, "server_error", "no_available_account"),
-        "deadline_exceeded": (503, "server_error", "task_interrupted"),
-    }
-
-    def __init__(self, kind: str, message: str = "") -> None:
-        defaults = self.DEFAULTS.get(kind, self.DEFAULTS["unavailable"])
-        self.kind = kind if kind in self.DEFAULTS else "unavailable"
-        self.status_code, self.error_type, self.code = defaults
-        detail = message or self.kind.replace("_", " ")
-        super().__init__(f"image_account_selection:{self.kind}; {detail}")
-
-
-class OAuthRefreshError(RuntimeError):
-    """Structured OAuth token refresh failure."""
-
-    def __init__(self, status_code: int, error_code: str = "", description: str = "") -> None:
-        self.status_code = int(status_code or 0)
-        self.error_code = str(error_code or "").strip()
-        self.description = str(description or "").strip()[:300]
-        details = [f"oauth_refresh_http_{self.status_code}"]
-        if self.error_code:
-            details.append(self.error_code)
-        if self.description and self.description.casefold() != self.error_code.casefold():
-            details.append(self.description)
-        super().__init__(": ".join(details))
-
-
-class TerminalRefreshTokenError(OAuthRefreshError):
-    """The refresh credential is revoked, expired, or otherwise unusable."""
-
-    def __init__(self, status_code: int, error_code: str = "", description: str = "") -> None:
-        super().__init__(status_code, error_code, description)
-        self.failure = image_failure("auth_invalid", raw_detail=str(self))
-
-
-class RefreshCredentialsChangedError(RuntimeError):
-    """Refresh credentials changed while an OAuth request was in flight."""
-
-    def __init__(self) -> None:
-        message = "OAuth refresh credentials changed during refresh."
-        self.failure = image_failure("upstream_unavailable", raw_detail=message)
-        super().__init__(message)
-
+from uuid import uuid4
 
 class AccountService:
     """账号池服务，使用 token -> account 的 dict 保存账号。"""
@@ -261,7 +179,6 @@ class AccountService:
         if len(suffix) == 24 and all(char in "0123456789abcdef" for char in suffix):
             return candidate
         return cls._management_id_for_token(access_token)
-
 
     @classmethod
     def _unique_management_id(
@@ -5292,7 +5209,6 @@ class AccountService:
             "status": "ok" if stats["active"] > 0 else "degraded",
             **stats,
         }
-
 
 from services.proxy_management_service import proxy_management_service
 
