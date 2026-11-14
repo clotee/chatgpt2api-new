@@ -68,6 +68,19 @@ RUN chmod 0755 /usr/local/bin/chatgpt2api-entrypoint
 
 WORKDIR /app
 
+# 以非 root 用户运行。/opt/chatgpt2api 是 entrypoint 的 cp -a 种子，
+# 必须先 chown 使同 UID 属主保留在非 root 下可成功（set -e 下否则启动失败）；
+# /app 归属 app 使命名卷初始化即为正确属主。
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd -g ${APP_GID} app \
+    && useradd -u ${APP_UID} -g app -m -s /usr/sbin/nologin app \
+    && chown -R app:app /opt/chatgpt2api /app
+ENV HOME=/home/app \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_CACHE_DIR=/tmp/uv-cache
+USER app:app
+
 EXPOSE 80
 
 ENTRYPOINT ["chatgpt2api-entrypoint"]

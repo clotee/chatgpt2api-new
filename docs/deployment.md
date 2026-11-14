@@ -17,6 +17,30 @@ docker compose up -d
 
 镜像中的 `/opt/chatgpt2api` 是只读应用种子，`/app` 是受管运行目录。首次启动或镜像版本变化时，入口脚本会用镜像种子刷新 `/app`，再按锁文件同步 Python 依赖；同一镜像正常重启时会保留控制台在线更新后的运行版本。业务数据始终留在独立的 `data/` 挂载中。
 
+### 非 root 运行与宿主机权限（v3.3.0+）
+
+镜像自 v3.3.0 起以 UID/GID 1000 的 `app` 用户运行（可用构建参数
+`APP_UID`/`APP_GID` 调整）。升级到该版本的存量部署需要一次性处理
+宿主机属主，否则容器会因无法写入 `data/` 而启动失败：
+
+```bash
+docker compose down
+# data 目录与 config.json 需对容器用户可写/可读
+sudo chown -R $UID:$GID data
+sudo chown $UID:$GID config.json   # 仅需可读，644 即可
+# 已有的 chatgpt2api-runtime 命名卷是 root 属主，需要重建或改属主：
+docker volume rm <项目名>_chatgpt2api-runtime   # 重新创建（可从镜像重建，业务数据在 data/）
+# 或用临时容器改属主：
+docker run --rm -v <项目名>_chatgpt2api-runtime:/app alpine chown -R 1000:1000 /app
+docker compose up -d
+```
+
+全新安装只需在 `docker compose up` 前确保 `data/` 与 `config.json`
+存在且属主正确（install.sh 的 sudo 安装路径同样适用）。macOS/Windows
+Docker Desktop 的绑定挂载属主虚拟化通常无需处理；Linux 裸机是主要
+风险点。容器内端口 80 依赖 Docker 默认 `NET_BIND_SERVICE` 能力，
+自定义 `cap_drop` 或 rootless 场景需另行验证。
+
 ### 本地 PostgreSQL 18
 
 需要由 Compose 一并运行 PostgreSQL 时，在 `.env` 中设置数据库密码：
