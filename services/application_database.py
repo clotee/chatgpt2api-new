@@ -114,6 +114,11 @@ def _build_database_engine(database_url: str) -> Engine:
         "pool_recycle": 3600,
     }
     if backend == "sqlite":
+        database_file = make_url(database_url).database
+        if database_file and database_file != ":memory:":
+            Path(database_file).expanduser().resolve().parent.mkdir(
+                parents=True, exist_ok=True
+            )
         timeout_seconds = _positive_float("SQLITE_BUSY_TIMEOUT_SECONDS", 30.0)
         kwargs["connect_args"] = {"timeout": timeout_seconds}
         kwargs["poolclass"] = NullPool
