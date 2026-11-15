@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatgpt2api"
-version = "3.2.9"
+version = "3.3.0"
 description = "将 ChatGPT 官网能力接入 OpenAI 兼容 API，并提供面向多账号、图片任务与自托管场景的管理控制台。"
 readme = "README.md"
 license = "AGPL-3.0-only"
