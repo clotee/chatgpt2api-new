@@ -623,3 +623,49 @@ remote_import/auth_keys + facade）。`create_router` 按原装饰器顺序聚�
 真实图片生成/编辑/切号/代理回退链路（T-23b）、非 root 容器实际
 启动与卷写入（T-19）——均需真实环境，清单见
 `docs/ai-analysis/12-e2e-validation-dev.md`。
+
+## Wave 6 — 生产环境 E2E 验证（dev 实例，已完成）
+
+部署形态：生产服务器 8.216.26.242（阿里云东京 ap-northeast-1，x86_64）
+旁路实例 `chatgpt2api-dev`，`127.0.0.1:3001`，镜像
+`registry.abyssalfish.com/deepsea/chatgpt2api:45c9cf8...`（amd64，
+经 docker load 直传——东京↔国内链路 ~150KB/s，registry 直拉同速）。
+生产旧实例 :3000 未动。
+
+### 自动化验证（服务器 curl 实测）
+
+| 项 | 结果 |
+| --- | --- |
+| §1.1 `/docs` 默认 | 404 ✓ |
+| §1.3 无 key | 401 + 正确错误体 ✓ |
+| §1.4 限流 | 5×401 → 429 + `Retry-After: 1` ✓ |
+| §1.5 正确 key | 不受限流 200 ✓ |
+| §1.6 CORS | 无 ACAO（同源默认）✓ |
+| §2.2 chat completions | `auto` 正常返回+usage ✓ |
+| §2.3 images generations | gpt-image-2 → PNG 56s ✓（T-23b 真实链路）|
+| §2.4 images edits | multipart 参考图 → PNG 33s ✓ |
+| §2.7 调用日志 | 3 条记录完整，无 auth-key 泄露 ✓ |
+| 日志脱敏（实测） | `image_attempt_failed` 中 `request_token:"[credential]"` ✓ |
+| 运行时日志 | 零异常/traceback；T-23b 遥测事件正常 ✓ |
+| 非 root（实测） | uid=1000 运行、entrypoint/uv sync/卷写入全通 ✓ |
+
+### 用户侧验证
+
+- CPA JSON 导入账号（Plus）成功；Studio UI 全流程无问题反馈。
+- n=1 生成在图库产生 2 张候选图——初步判断为上游返回多候选
+  的固有行为（两次独立 conversation 流），待与旧版对比确认。
+
+### OAuth 问题（搁置→已诊断）
+
+现象：OAuth 流程中提示"身份验证令牌已失效"（OpenAI 侧过期
+transaction 提示，非本项目文案）。`/api/accounts/oauth/start`
+返回 200，无 exchange 报错日志。容器内实测 auth.openai.com /
+auth0.openai.com / api.openai.com TLS 握手均正常（HTTP 边缘
+响应，非证书错误）——**T-01 verify=True 未引入回归**，
+判定为上游 OAuth transaction 过期（刷新/超时），建议用户
+择机重试；CPA/Sub2API 导入路径已验证可用。
+
+### 结论
+
+E2E 实质通过：安全行为、真实上游文本/图片/编辑链路、账号管理、
+日志脱敏、非 root 部署全部验证。OAuth 重试为遗留观察项。
